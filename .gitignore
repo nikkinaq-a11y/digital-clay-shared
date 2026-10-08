@@ -1,0 +1,8 @@
+node_modules/
+tools/
+exports/
+signing/
+twa-manifest.json
+*.apk
+*.aab
+.DS_Store

@@ -1,0 +1,22 @@
+{
+  "name": "digital-clay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Hand-tracked SDF clay sculpting prototype for Meta Quest 3 (WebXR)",
+  "scripts": {
+    "start": "./start.sh",
+    "serve": "node serve.js",
+    "test": "node test/clay.test.mjs",
+    "headset": "tools/platform-tools/adb devices -l",
+    "headset:bridge": "tools/platform-tools/adb reverse tcp:8080 tcp:8080 && echo bridged",
+    "headset:open": "tools/platform-tools/adb shell am start -a android.intent.action.VIEW -d http://localhost:8080",
+    "headset:log": "tools/platform-tools/adb logcat -v brief chromium:V *:S",
+    "headset:shot": "tools/platform-tools/adb exec-out screencap -p > headset.png && echo wrote headset.png",
+    "headset:install": "tools/platform-tools/adb install -r app-release-signed.apk",
+    "apk": "./build-apk.sh"
+  },
+  "dependencies": {
+    "@meta-quest/bubblewrap-cli": "^1.24.1"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "_comment": [
+    "Marker layout for the clay block's base plate.",
+    "",
+    "Coordinates are metres in the BOARD frame: origin at the centre of the",
+    "plate, x right, y up the plate, z out of its face. The pose this produces",
+    "is the pose of that origin, so put the origin where you want the clay",
+    "volume anchored — the centre of the seat the block sits in.",
+    "",
+    "Why four markers and not one: four coplanar corners is the minimum for a",
+    "pose and the worst case for stability. A single small marker suffers the",
+    "planar ambiguity, where two quite different orientations reproject almost",
+    "identically and the solver flips between them a few times a second. Spread",
+    "several markers across a rigid plate and the corners stop being one small",
+    "square, which removes the ambiguity and survives a hand covering part of",
+    "the plate.",
+    "",
+    "Why the plate and not the clay: clay deforms and picks up slip. A marker",
+    "stuck to the part being sculpted stops being planar, stops being clean, and",
+    "is exactly where the user's hands are. The plate is rigid, stays visible,",
+    "and is what the block's pose is actually defined against.",
+    "",
+    "Print at 100% scale and MEASURE a printed marker with calipers before",
+    "trusting 'size' — printer scaling of a few percent maps straight into a",
+    "few percent range error, which at 0.5 m is over a centimetre.",
+    "",
+    "Dictionary: DICT_4X4_50. Generate with",
+    "  python3 -c \"import cv2;cv2.imwrite('m0.png',cv2.aruco.generateImageMarker(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50),0,600))\""
+  ],
+
+  "dictionary": "4X4_50",
+  "markers": [
+    { "id": 0, "size": 0.040, "position": [-0.060,  0.060, 0.0], "rotation": 0 },
+    { "id": 1, "size": 0.040, "position": [ 0.060,  0.060, 0.0], "rotation": 0 },
+    { "id": 2, "size": 0.040, "position": [ 0.060, -0.060, 0.0], "rotation": 0 },
+    { "id": 3, "size": 0.040, "position": [-0.060, -0.060, 0.0], "rotation": 0 }
+  ]
+}

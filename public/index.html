@@ -1,0 +1,795 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Digital Clay — Quest 3 prototype</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<meta name="theme-color" content="#141A23">
+<link rel="icon" href="./icons/icon-192.png">
+<style>
+  :root{
+    --ink:#141A23; --ink-soft:#48525F; --ink-faint:#7A8593;
+    --paper:#EDEFF2; --surface:#F7F8FA; --rule:#C9D0D8;
+    --accent:#1E44C8; --ochre:#9A6512; --moss:#1C6B52;
+    --mono: ui-monospace,"SF Mono",Menlo,monospace;
+    --sans: system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --ink:#E7EBF1; --ink-soft:#A3AEBC; --ink-faint:#74808F;
+      --paper:#10141B; --surface:#171D26; --rule:#2E3846;
+      --accent:#8AA2FF; --ochre:#D9A45C; --moss:#6FC7A6;
+    }
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);overflow:hidden}
+  canvas{display:block;position:fixed;inset:0}
+  #panel{
+    position:fixed; left:24px; top:24px; z-index:10; width:min(360px,calc(100vw - 48px));
+    background:var(--surface); border:1px solid var(--rule);
+    padding:18px 20px 20px; max-height:calc(100vh - 48px); overflow-y:auto;
+  }
+  h1{font-size:17px;margin:0 0 4px;letter-spacing:-.01em}
+  .sub{font-family:var(--mono);font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--ink-faint);margin:0 0 16px}
+  button{
+    font-family:var(--sans);font-size:14px;font-weight:600;
+    background:var(--accent);color:#fff;border:none;padding:11px 16px;width:100%;
+    cursor:pointer;letter-spacing:.01em;
+  }
+  button:disabled{background:var(--rule);color:var(--ink-faint);cursor:not-allowed}
+  button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+  #status{font-family:var(--mono);font-size:11.5px;line-height:1.6;color:var(--ink-soft);margin:12px 0 0;white-space:pre-wrap}
+  .keys{border-top:1px solid var(--rule);margin-top:16px;padding-top:14px;font-size:13px;line-height:1.55;color:var(--ink-soft)}
+  .keys b{color:var(--ink);font-weight:600}
+  .keys dl{display:grid;grid-template-columns:auto 1fr;gap:5px 12px;margin:8px 0 0;font-size:12.5px}
+  .keys dt{font-family:var(--mono);font-size:11px;color:var(--ink-faint);white-space:nowrap}
+  .keys dd{margin:0}
+  #stats{position:fixed;right:16px;top:16px;z-index:10;font-family:var(--mono);font-size:11px;
+    color:var(--ink-soft);background:var(--surface);border:1px solid var(--rule);padding:8px 12px;
+    text-align:right;line-height:1.6;font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+
+<div id="panel">
+  <h1>Digital Clay</h1>
+  <p class="sub">SDF volume · Surface Nets · WebXR hands</p>
+  <button id="enter" disabled>Checking WebXR…</button>
+  <p id="status">Initialising…</p>
+  <div class="keys">
+    <b>In the headset</b>
+    <dl>
+      <dt>R pinch</dt><dd>Sculpt with the current tool</dd>
+      <dt>L pinch</dt><dd>Grab the block — move and turn it</dd>
+      <dt>Poke</dt><dd>Press the buttons on the floating panel</dd>
+      <dt>Triggers</dt><dd>Same, if you use controllers instead</dd>
+    </dl>
+    <b style="display:block;margin-top:12px">On this screen</b>
+    <dl>
+      <dt>Drag</dt><dd>Turn the block</dd>
+      <dt>Scroll</dt><dd>Zoom</dd>
+    </dl>
+  </div>
+</div>
+
+<div id="stats">—</div>
+
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from './vendor/three.module.js';
+import { XRHandModelFactory } from './vendor/addons/webxr/XRHandModelFactory.js';
+
+/* ══════════════════════════════════════════════════════════════════════════
+   CONFIG
+   ══════════════════════════════════════════════════════════════════════════ */
+import { CFG, field, dirty, idx, cidx, sx, resetToCuboid, sealBorder,
+         markAllDirty, stamp, buildChunk, buildAll } from './clay.js';
+
+const { N, DIM, WORLD, VOX, CS, CHUNKS, BLOCK_HALF } = CFG;
+const REMESH_MS = 3.0;     // per-frame remesh time budget, milliseconds
+const UNDO_DEPTH    = 8;
+
+// Tuning bench: feel parameters can be overridden from the URL so a change is
+// a reload, not an edit — e.g. ?beta=20&mc=1.2  ?hz=120  ?probe=1
+const Q = new URLSearchParams(location.search);
+const qnum = (k, d) => Q.has(k) && isFinite(+Q.get(k)) ? +Q.get(k) : d;
+const TARGET_HZ    = qnum('hz', 90);          // Quest Browser defaults to 72 unless asked
+const SHOW_PROBE   = Q.get('probe') === '1';  // raw, unfiltered fingertip marker
+const HAND_MASK    = Q.get('hands') || 'mask';  // mask | show (tinted, to check fit) | off
+
+// smoothK is how readily material fuses to itself; rate is how far a single
+// stroke moves the field. Soft is high on both, stiff is low on both — a wide
+// spread so the difference is unmistakable with only two materials.
+const MATERIALS = [
+  { name:'Soft clay',  color:0x9c7f6b, rough:0.55, smoothK:0.95, rate:1.00 },
+  { name:'Stiff clay', color:0xb8a490, rough:0.88, smoothK:0.20, rate:0.45 },
+];
+const TOOLS = ['Add', 'Carve', 'Smooth'];
+
+/* ══════════════════════════════════════════════════════════════════════════
+   SCENE
+   ══════════════════════════════════════════════════════════════════════════ */
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local-floor');
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.01, 30);
+camera.position.set(0, 1.25, 0.55);
+camera.lookAt(0, 1.15, -0.4);
+
+scene.add(new THREE.HemisphereLight(0xdfe6f2, 0x2a2622, 1.5));
+const key = new THREE.DirectionalLight(0xfff3e2, 2.0);
+key.position.set(0.6, 1.4, 0.8);
+scene.add(key);
+const rim = new THREE.DirectionalLight(0x9fb6ff, 0.7);
+rim.position.set(-0.8, 0.4, -0.9);
+scene.add(rim);
+
+// The clay lives in its own group so grabbing moves the block, not the world.
+const clay = new THREE.Group();
+clay.position.set(0, 1.15, -0.42);
+scene.add(clay);
+
+const clayMat = new THREE.MeshStandardMaterial({
+  color: MATERIALS[0].color, roughness: MATERIALS[0].rough, metalness: 0, flatShading: false,
+});
+
+const chunkMeshes = [];
+for (let cz = 0; cz < CHUNKS; cz++)
+  for (let cy = 0; cy < CHUNKS; cy++)
+    for (let cx = 0; cx < CHUNKS; cx++) {
+      const m = new THREE.Mesh(makeChunkGeometry(0, 0), clayMat);
+      m.frustumCulled = false;
+      m.userData.c = [cx, cy, cz];
+      m.userData.tris = 0;
+      clay.add(m);
+      chunkMeshes[cidx(cx, cy, cz)] = m;
+    }
+
+/** Chunk buffers are sized with headroom and rewritten in place, so a stroke
+ *  uploads into existing GL buffers instead of allocating new ones each remesh. */
+function makeChunkGeometry(vfloats, icount) {
+  const g = new THREE.BufferGeometry();
+  const pos = new THREE.BufferAttribute(new Float32Array(vfloats), 3).setUsage(THREE.DynamicDrawUsage);
+  const nrm = new THREE.BufferAttribute(new Float32Array(vfloats), 3).setUsage(THREE.DynamicDrawUsage);
+  g.setAttribute('position', pos);
+  g.setAttribute('normal', nrm);
+  g.setIndex(new THREE.BufferAttribute(new Uint16Array(icount), 1).setUsage(THREE.DynamicDrawUsage));
+  g.setDrawRange(0, 0);
+  return g;
+}
+
+function writeAttr(attr, src) {
+  attr.array.set(src);
+  attr.clearUpdateRanges();
+  attr.addUpdateRange(0, src.length);
+  attr.needsUpdate = true;
+}
+
+function uploadChunk(m, { positions, normals, indices }) {
+  let g = m.geometry;
+  if (positions.length > g.attributes.position.array.length || indices.length > g.index.array.length) {
+    // Grow by half again so a sculpture that keeps gaining surface does not
+    // reallocate every stroke. Dispose first: replacing an attribute does not
+    // free its GL buffer, and that leak is what this replaces.
+    const vcap = Math.max(768, Math.ceil(positions.length * 1.5 / 3) * 3);
+    const icap = Math.max(1536, Math.ceil(indices.length * 1.5 / 3) * 3);
+    g.dispose();
+    g = m.geometry = makeChunkGeometry(vcap, icap);
+  }
+  writeAttr(g.attributes.position, positions);
+  writeAttr(g.attributes.normal, normals);
+  writeAttr(g.index, indices);
+  g.setDrawRange(0, indices.length);
+  m.userData.tris = indices.length / 3;
+}
+
+// a plinth so the block reads as sitting on something in passthrough
+const plinth = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.16, 0.17, 0.012, 40),
+  new THREE.MeshStandardMaterial({ color: 0x2a2f3a, roughness: 0.9, transparent: true, opacity: 0.55 })
+);
+plinth.position.y = -BLOCK_HALF - 0.02;
+clay.add(plinth);
+
+/* ── brush cursor ────────────────────────────────────────────────────────── */
+const cursor = new THREE.Mesh(
+  new THREE.SphereGeometry(1, 20, 14),
+  new THREE.MeshBasicMaterial({ color: 0x1e44c8, wireframe: true, transparent: true, opacity: 0.5 })
+);
+cursor.visible = false;
+scene.add(cursor);
+
+// Latency probe: an unfiltered marker on the raw fingertip. The gap between it
+// and the cursor is the filter's lag; filming it against the real finger at
+// 240 fps measures the platform's.
+const probe = new THREE.Mesh(
+  new THREE.BoxGeometry(0.008, 0.008, 0.008),
+  new THREE.MeshBasicMaterial({ color: 0xff3030 })
+);
+probe.visible = false;
+scene.add(probe);
+
+/* ── hand mask ───────────────────────────────────────────────────────────────
+   Quest Browser composites WebXR over passthrough without occluding it, so a
+   hand reaching behind the clay is painted over unless we mask it. This is how
+   the Quest home does it: the tracked, skinned hand mesh drawn depth-only
+   before anything else, so the clay behind it is never written and the real
+   hand shows through. The generic WebXR hand model is skinned to the 25
+   tracked joints, so it bends and stretches with the actual fingers. */
+const handMaskMat = HAND_MASK === 'show'
+  ? new THREE.MeshBasicMaterial({ color: 0x30c0ff })   // solid, so the fit to the real hand is easy to judge
+  : new THREE.MeshBasicMaterial({ colorWrite: false });
+if (HAND_MASK !== 'off') {
+  const handFactory = new XRHandModelFactory(null, model => {
+    model.traverse(o => {
+      if (!o.isMesh) return;
+      o.material = handMaskMat;
+      o.renderOrder = -10;          // opaque queue sorts by renderOrder first: drawn before the clay
+      o.castShadow = o.receiveShadow = false;
+    });
+  }).setPath('./vendor/hands/');
+  for (const i of [0, 1]) {
+    const hand = renderer.xr.getHand(i);
+    hand.add(handFactory.createHandModel(hand, 'mesh'));
+    scene.add(hand);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   POKE PANEL  —  physical buttons beat gestures when tracking is noisy
+   ══════════════════════════════════════════════════════════════════════════ */
+const panel = new THREE.Group();
+panel.position.set(-0.30, 1.12, -0.38);
+panel.rotation.y = 0.5;
+scene.add(panel);
+
+const BTN_W = 0.10, BTN_H = 0.045, BTN_D = 0.022;
+function makeLabel(text, sub) {
+  const c = document.createElement('canvas');
+  c.width = 384; c.height = 168;
+  const g = c.getContext('2d');
+  g.fillStyle = '#F7F8FA'; g.fillRect(0, 0, c.width, c.height);
+  g.fillStyle = '#141A23';
+  g.font = '600 46px system-ui, sans-serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(text, c.width / 2, sub ? 62 : c.height / 2);
+  if (sub) {
+    g.fillStyle = '#48525F';
+    g.font = '400 30px ui-monospace, monospace';
+    g.fillText(sub, c.width / 2, 118);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+const buttons = [];
+function addButton(label, sub, y, onPress) {
+  const tex = makeLabel(label, sub);
+  const faces = [
+    new THREE.MeshStandardMaterial({ color: 0xc9d0d8, roughness: 0.7 }),
+    new THREE.MeshStandardMaterial({ color: 0xc9d0d8, roughness: 0.7 }),
+    new THREE.MeshStandardMaterial({ color: 0xc9d0d8, roughness: 0.7 }),
+    new THREE.MeshStandardMaterial({ color: 0xc9d0d8, roughness: 0.7 }),
+    new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6 }),
+    new THREE.MeshStandardMaterial({ color: 0xc9d0d8, roughness: 0.7 }),
+  ];
+  const m = new THREE.Mesh(new THREE.BoxGeometry(BTN_W, BTN_H, BTN_D), faces);
+  m.position.set(0, y, 0);
+  panel.add(m);
+  const b = { mesh: m, tex, faces, onPress, restZ: 0, cooling: 0, label, sub };
+  buttons.push(b);
+  return b;
+}
+function setButtonLabel(b, label, sub) {
+  b.faces[4].map.dispose();
+  b.faces[4].map = makeLabel(label, sub);
+  b.faces[4].needsUpdate = true;
+}
+
+const backing = new THREE.Mesh(
+  new THREE.BoxGeometry(BTN_W + 0.022, 0.295, 0.008),
+  new THREE.MeshStandardMaterial({ color: 0x141a23, roughness: 0.9, transparent: true, opacity: 0.72 })
+);
+backing.position.z = -BTN_D / 2 - 0.005;
+panel.add(backing);
+
+/* ══════════════════════════════════════════════════════════════════════════
+   STATE + UNDO
+   ══════════════════════════════════════════════════════════════════════════ */
+const state = {
+  tool: 0, material: 0, radius: 0.022,
+  strokes: 0, tris: 0, remeshMs: 0, exporting: false, msg: '',
+};
+// A ring of preallocated snapshots. Copying into one costs the same as
+// field.slice(), but never allocates 1.1 MB at the moment a stroke begins.
+const undoRing = Array.from({ length: UNDO_DEPTH }, () => new Float32Array(field.length));
+let undoHead = 0, undoCount = 0;
+function pushUndo() {
+  undoRing[undoHead].set(field);
+  undoHead = (undoHead + 1) % UNDO_DEPTH;
+  undoCount = Math.min(UNDO_DEPTH, undoCount + 1);
+}
+function undo() {
+  if (!undoCount) { flash('Nothing to undo'); return; }
+  undoHead = (undoHead - 1 + UNDO_DEPTH) % UNDO_DEPTH;
+  undoCount--;
+  field.set(undoRing[undoHead]);
+  markAllDirty();
+  flash('Undo');
+}
+function flash(m) { state.msg = m; state.msgUntil = performance.now() + 1800; }
+
+const btnTool = addButton('TOOL', TOOLS[0],  0.108, () => {
+  state.tool = (state.tool + 1) % TOOLS.length;
+  setButtonLabel(btnTool, 'TOOL', TOOLS[state.tool]);
+});
+const btnMat = addButton('MATERIAL', MATERIALS[0].name, 0.054, () => {
+  state.material = (state.material + 1) % MATERIALS.length;
+  const m = MATERIALS[state.material];
+  clayMat.color.setHex(m.color);
+  clayMat.roughness = m.rough;
+  setButtonLabel(btnMat, 'MATERIAL', m.name);
+});
+addButton('UNDO', null, 0.0, undo);
+const btnExport = addButton('EXPORT', 'OBJ', -0.054, () => exportOBJ());
+
+/* ── live reload ──────────────────────────────────────────────────────────
+   Reloading ends the XR session, and only a real user gesture can start a new
+   one — so when a change lands mid-session we light this button rather than
+   yanking you out. One poke and you are on the new code. */
+const btnReload = addButton('RELOAD', 'up to date', -0.108, () => {
+  if (pendingReload) location.reload();
+});
+let pendingReload = false;
+
+function setReloadPending(on) {
+  pendingReload = on;
+  setButtonLabel(btnReload, 'RELOAD', on ? 'NEW VERSION' : 'up to date');
+  for (let i = 0; i < 6; i++) {
+    if (i === 4) continue;
+    btnReload.faces[i].color.setHex(on ? 0xffb020 : 0xc9d0d8);
+  }
+}
+
+try {
+  const live = new EventSource('/live');
+  live.onmessage = () => {
+    if (renderer.xr.isPresenting) { setReloadPending(true); flash('New version ready — poke RELOAD'); }
+    else location.reload();
+  };
+} catch (e) { /* hosted build, no dev server — fine */ }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ONE EURO FILTER  —  steady when slow, responsive when fast
+   ══════════════════════════════════════════════════════════════════════════ */
+// Positions are in metres, so hand speed is under ~1 m/s and beta must be in
+// the tens to matter. The old beta of 0.035 added ~0.01 Hz: the filter was a
+// fixed 1.2 Hz low-pass with ~130 ms of lag at every speed (≈4 cm behind the
+// finger mid-stroke). 1.5 / 15 / 2.0 simulates to ~26 ms at 0.3 m/s with
+// still-hand jitter under 1 mm — well inside one 4.7 mm voxel.
+// See docs/RESEARCH-BRIEF-2026-10-01.md §4.
+const EURO = { minCutoff: qnum('mc', 1.5), beta: qnum('beta', 15), dCutoff: qnum('dc', 2.0) };
+
+class OneEuro {
+  constructor({ minCutoff, beta, dCutoff } = EURO) {
+    this.minCutoff = minCutoff; this.beta = beta; this.dCutoff = dCutoff;
+    this.x = new THREE.Vector3(); this.dx = new THREE.Vector3(); this.prev = new THREE.Vector3();
+    this.raw = new THREE.Vector3(); this.ready = false; this.t = 0;
+  }
+  alpha(cutoff, dt) { const r = 2 * Math.PI * cutoff * dt; return r / (r + 1); }
+  filter(v, t) {
+    if (!this.ready) {
+      this.x.copy(v); this.prev.copy(v); this.dx.set(0, 0, 0); this.t = t; this.ready = true;
+      return this.x;
+    }
+    const dt = Math.max(1e-3, t - this.t); this.t = t;
+    this.raw.subVectors(v, this.prev).divideScalar(dt);
+    this.prev.copy(v);
+    this.dx.lerp(this.raw, this.alpha(this.dCutoff, dt));
+    const cutoff = this.minCutoff + this.beta * this.dx.length();
+    this.x.lerp(v, this.alpha(cutoff, dt));
+    return this.x;
+  }
+  reset() { this.ready = false; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   XR INPUT
+   ══════════════════════════════════════════════════════════════════════════ */
+const PINCH_ON = 0.022, PINCH_OFF = 0.034;   // hysteresis, in metres
+const JUMP_LIMIT = 0.14;                     // reject teleporting joints
+
+const hands = {
+  right: { pinch: false, filter: new OneEuro(), last: null, stroking: false, lastStamp: null, tracked: false },
+  left:  { pinch: false, filter: new OneEuro(), last: null, grab: null, tracked: false },
+};
+
+const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _q = new THREE.Quaternion();
+const _m = new THREE.Matrix4(), _mi = new THREE.Matrix4();
+
+function jointPos(frame, ref, hand, name, out) {
+  const j = hand.get(name);
+  if (!j) return null;
+  const p = frame.getJointPose(j, ref);
+  if (!p) return null;
+  out.set(p.transform.position.x, p.transform.position.y, p.transform.position.z);
+  return out;
+}
+
+function readHand(frame, ref, src, h) {
+  h.tracked = false;
+  if (src.hand) {
+    const tip   = jointPos(frame, ref, src.hand, 'index-finger-tip', _v);
+    if (!tip) return null;
+    const point = tip.clone();
+    const thumb = jointPos(frame, ref, src.hand, 'thumb-tip', _v2);
+    let pinchDist = 1;
+    if (thumb) pinchDist = point.distanceTo(thumb);
+    h.tracked = true;
+    // hysteresis: enter tight, leave loose
+    if (!h.pinch && pinchDist < PINCH_ON) h.pinch = true;
+    else if (h.pinch && pinchDist > PINCH_OFF) h.pinch = false;
+    return point;
+  }
+  // controller fallback
+  if (src.gripSpace) {
+    const p = frame.getPose(src.gripSpace, ref);
+    if (!p) return null;
+    const point = new THREE.Vector3(p.transform.position.x, p.transform.position.y, p.transform.position.z);
+    // push the acting point out past the controller body
+    const qq = p.transform.orientation;
+    _q.set(qq.x, qq.y, qq.z, qq.w);
+    point.add(new THREE.Vector3(0, 0, -0.06).applyQuaternion(_q));
+    const gp = src.gamepad;
+    const trig = gp && gp.buttons[0] ? gp.buttons[0].value > 0.55 : false;
+    h.pinch = trig;
+    h.tracked = true;
+    return point;
+  }
+  return null;
+}
+
+/* ── poke detection ──────────────────────────────────────────────────────── */
+const _local = new THREE.Vector3();
+function updatePoke(worldPoint, dt) {
+  for (const b of buttons) {
+    b.cooling = Math.max(0, b.cooling - dt);
+    let pressed = false;
+    if (worldPoint) {
+      _local.copy(worldPoint);
+      panel.worldToLocal(_local);
+      const dx = Math.abs(_local.x), dy = Math.abs(_local.y - b.mesh.position.y), dz = _local.z;
+      if (dx < BTN_W / 2 && dy < BTN_H / 2 && dz < BTN_D / 2 && dz > -BTN_D) pressed = true;
+    }
+    const target = pressed ? -0.008 : 0;
+    b.mesh.position.z += (target - b.mesh.position.z) * Math.min(1, dt * 22);
+    if (pressed && b.cooling === 0) { b.cooling = 0.45; b.onPress(); }
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   FRAME LOOP
+   ══════════════════════════════════════════════════════════════════════════ */
+let lastT = performance.now() / 1000;
+let fpsAcc = 0, fpsN = 0, fps = 0;
+// Per-second worst cases, so a hitch shows up in the HUD instead of being averaged away.
+const perf = { dtMax: 0, jsMax: 0, stampMax: 0, backlogMax: 0, hitches: 0, shown: { dtMax: 0, jsMax: 0, stampMax: 0, backlogMax: 0, hitches: 0 }, next: 0 };
+
+function tick(timeMs, frame) {
+  const tickStart = performance.now();
+  const t = (timeMs || performance.now()) / 1000;
+  const rawDt = t - lastT;
+  const dt = Math.min(0.05, Math.max(1e-4, rawDt));
+  perf.dtMax = Math.max(perf.dtMax, rawDt * 1000);
+  if (rawDt > 0.016) perf.hitches++;
+  lastT = t;
+  fpsAcc += dt; fpsN++;
+  if (fpsAcc > 0.5) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0; }
+
+  let pokePoint = null;
+  cursor.visible = false;
+  probe.visible = false;
+
+  if (frame && renderer.xr.isPresenting) {
+    const ref = renderer.xr.getReferenceSpace();
+    const session = renderer.xr.getSession();
+
+    for (const src of session.inputSources) {
+      const side = src.handedness;
+      if (side !== 'left' && side !== 'right') continue;
+      const h = hands[side];
+      const raw = readHand(frame, ref, src, h);
+      if (!raw) { h.filter.reset(); h.last = null; continue; }
+
+      // reject implausible jumps rather than gouging the sculpture
+      if (h.last && raw.distanceTo(h.last) > JUMP_LIMIT) {
+        h.filter.reset(); h.last = raw.clone(); h.stroking = false; h.lastStamp = null; continue;
+      }
+      h.last = raw.clone();
+      const p = h.filter.filter(raw, t).clone();
+
+      if (side === 'right') {
+        if (SHOW_PROBE) { probe.position.copy(raw); probe.visible = true; }
+        pokePoint = p;
+        cursor.position.copy(p);
+        cursor.scale.setScalar(state.radius);
+        cursor.visible = true;
+        cursor.material.color.setHex(h.pinch ? 0xffb020 : 0x1e44c8);
+        if (h.pinch) doStroke(h, p);
+        else { h.stroking = false; h.lastStamp = null; brushActive = false; }
+      } else {
+        if (h.pinch) doGrab(h, p);
+        else h.grab = null;
+      }
+    }
+  } else {
+    hands.right.stroking = false;
+  }
+
+  updatePoke(pokePoint, dt);
+  remeshBudgeted();
+  let backlog = 0;
+  for (let i = 0; i < dirty.length; i++) backlog += dirty[i];
+  perf.backlogMax = Math.max(perf.backlogMax, backlog);
+  perf.jsMax = Math.max(perf.jsMax, performance.now() - tickStart);   // before render: our own work only
+  renderer.render(scene, camera);
+  if (tickStart > perf.next) {
+    perf.next = tickStart + 1000;
+    for (const k of ['dtMax', 'jsMax', 'stampMax', 'backlogMax', 'hitches']) { perf.shown[k] = perf[k]; perf[k] = 0; }
+  }
+  updateHUD();
+}
+
+/* ── sculpting stroke, resampled along the path ──────────────────────────── */
+function doStroke(h, worldP) {
+  const s0 = performance.now();
+  if (!h.stroking) { pushUndo(); h.stroking = true; h.lastStamp = null; state.strokes++; }
+  clay.updateMatrixWorld();
+  _mi.copy(clay.matrixWorld).invert();
+  const lp = worldP.clone().applyMatrix4(_mi);
+
+  const step = state.radius * 0.35;
+  if (h.lastStamp) {
+    const d = lp.distanceTo(h.lastStamp);
+    const n = Math.min(12, Math.max(1, Math.ceil(d / step)));
+    for (let i = 1; i <= n; i++) {
+      const q = h.lastStamp.clone().lerp(lp, i / n);
+      stamp(q.x, q.y, q.z, state.radius, state.tool, 0.9, MATERIALS[state.material]);
+    }
+  } else {
+    stamp(lp.x, lp.y, lp.z, state.radius, state.tool, 1, MATERIALS[state.material]);
+  }
+  h.lastStamp = lp;
+  brushLocal.copy(lp); brushActive = true;
+  perf.stampMax = Math.max(perf.stampMax, performance.now() - s0);
+}
+
+/* ── grab: the off hand holds and turns the block ────────────────────────── */
+function doGrab(h, worldP) {
+  if (!h.grab) {
+    h.grab = { hand0: worldP.clone(), obj0: clay.position.clone(), quat0: clay.quaternion.clone(), prev: worldP.clone() };
+    return;
+  }
+  const g = h.grab;
+  // translate with the hand
+  clay.position.copy(g.obj0).add(worldP.clone().sub(g.hand0));
+  // and spin the block around Y from sideways motion — a turntable, not free rotation
+  const dx = worldP.x - g.prev.x;
+  clay.rotateY(-dx * 9.0);
+  g.prev.copy(worldP);
+}
+
+/* ── remesh with a per-frame cap so a fast sweep never drops a frame ─────── */
+// Time-based, not count-based: the headset runs this several times slower
+// than a laptop, so spend a fixed slice of the frame and finish next frame.
+// Nearest-the-brush first: when the slice runs out, what waits a frame is the
+// far edge of the stroke, never the clay under your finger.
+const brushLocal = new THREE.Vector3();
+let brushActive = false;
+const dirtyList = new Int32Array(CHUNKS ** 3), dirtyDist = new Float32Array(CHUNKS ** 3);
+const chunkCentre = i => (((i % CHUNKS) + 0.5) / CHUNKS - 0.5) * WORLD;
+function remeshBudgeted() {
+  const t0 = performance.now();
+  let n = 0;
+  for (let i = 0; i < dirty.length; i++) {
+    if (!dirty[i]) continue;
+    let d = 0;
+    if (brushActive) {
+      const dx = chunkCentre(i) - brushLocal.x;
+      const dy = chunkCentre((i / CHUNKS) | 0) - brushLocal.y;
+      const dz = chunkCentre((i / CHUNKS / CHUNKS) | 0) - brushLocal.z;
+      d = dx*dx + dy*dy + dz*dz;
+    }
+    dirtyList[n] = i; dirtyDist[n] = d; n++;
+  }
+  if (!n) return;
+  // insertion sort: n is at most a handful of chunks per frame
+  for (let a = 1; a < n; a++) {
+    const li = dirtyList[a], ld = dirtyDist[a];
+    let b = a - 1;
+    while (b >= 0 && dirtyDist[b] > ld) { dirtyList[b+1] = dirtyList[b]; dirtyDist[b+1] = dirtyDist[b]; b--; }
+    dirtyList[b+1] = li; dirtyDist[b+1] = ld;
+  }
+  let done = 0;
+  for (let k = 0; k < n; k++) {
+    if (done > 0 && performance.now() - t0 > REMESH_MS) break;
+    const i = dirtyList[k];
+    dirty[i] = 0;
+    const m = chunkMeshes[i];
+    const c = m.userData.c;
+    uploadChunk(m, buildChunk(c[0], c[1], c[2]));
+    done++;
+  }
+  state.remeshMs = performance.now() - t0;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   EXPORT
+   ══════════════════════════════════════════════════════════════════════════ */
+function buildOBJ() {
+  const { positions, normals, indices } = buildAll();   // welded, manifold
+  const L = [
+    '# Digital Clay — Quest 3 prototype',
+    '# ' + new Date().toISOString(),
+    '# material: ' + MATERIALS[state.material].name,
+    '# volume: ' + N + '^3, voxel ' + (VOX*1000).toFixed(2) + ' mm',
+    'o clay',
+  ];
+  for (let i = 0; i < positions.length; i += 3)
+    L.push('v ' + positions[i].toFixed(5) + ' ' + positions[i+1].toFixed(5) + ' ' + positions[i+2].toFixed(5));
+  for (let i = 0; i < normals.length; i += 3)
+    L.push('vn ' + normals[i].toFixed(4) + ' ' + normals[i+1].toFixed(4) + ' ' + normals[i+2].toFixed(4));
+  for (let i = 0; i < indices.length; i += 3) {
+    const a = indices[i]+1, b = indices[i+1]+1, c = indices[i+2]+1;
+    L.push('f ' + a + '//' + a + ' ' + b + '//' + b + ' ' + c + '//' + c);
+  }
+  return L.join('\n') + '\n';
+}
+
+async function exportOBJ() {
+  if (state.exporting) return;
+  state.exporting = true;
+  setButtonLabel(btnExport, 'EXPORT', 'saving…');
+  try {
+    const obj = buildOBJ();
+    const res = await fetch('/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain', 'X-Material': MATERIALS[state.material].name },
+      body: obj,
+    });
+    const j = await res.json();
+    flash(`Saved ${j.file}`);
+    setButtonLabel(btnExport, 'EXPORT', 'saved ✓');
+  } catch (e) {
+    flash('Export failed: ' + e.message);
+    setButtonLabel(btnExport, 'EXPORT', 'failed');
+  }
+  setTimeout(() => setButtonLabel(btnExport, 'EXPORT', 'OBJ'), 2500);
+  state.exporting = false;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   HUD / DESKTOP
+   ══════════════════════════════════════════════════════════════════════════ */
+const statsEl = document.getElementById('status');
+const cornerEl = document.getElementById('stats');
+let hudNext = 0;
+function updateHUD() {
+  // DOM text layout every frame is wasted work in the headset; 4 Hz is plenty.
+  const now = performance.now();
+  if (now < hudNext) return;
+  hudNext = now + 250;
+  let tris = 0;
+  for (const m of chunkMeshes) tris += m.userData.tris;
+  state.tris = tris;
+  const msg = (state.msgUntil && now < state.msgUntil) ? state.msg : '';
+  const session = renderer.xr.getSession();
+  const hz = session && session.frameRate ? ` / ${Math.round(session.frameRate)} Hz` : '';
+  cornerEl.textContent =
+    `${fps.toFixed(0)} fps${hz}\n${(tris/1000).toFixed(1)}k tris\nremesh ${state.remeshMs.toFixed(1)} ms\n` +
+    `worst frame ${perf.shown.dtMax.toFixed(0)} ms · ${perf.shown.hitches} slow\n` +
+    `js ${perf.shown.jsMax.toFixed(1)} · stroke ${perf.shown.stampMax.toFixed(1)} ms · backlog ${perf.shown.backlogMax}\n` +
+    `${TOOLS[state.tool]} · ${MATERIALS[state.material].name}\n` +
+    `${hands.left.tracked ? 'L✓' : 'L·'} ${hands.right.tracked ? 'R✓' : 'R·'}` +
+    (msg ? `\n${msg}` : '');
+}
+
+// desktop preview: drag to turn, scroll to zoom — so the block is visible at rest
+let dragging = false, px = 0, py = 0;
+renderer.domElement.addEventListener('pointerdown', e => { dragging = true; px = e.clientX; py = e.clientY; });
+addEventListener('pointerup', () => dragging = false);
+addEventListener('pointermove', e => {
+  if (!dragging || renderer.xr.isPresenting) return;
+  clay.rotateY((e.clientX - px) * 0.008);
+  clay.rotateX((e.clientY - py) * 0.008);
+  px = e.clientX; py = e.clientY;
+});
+addEventListener('wheel', e => {
+  if (renderer.xr.isPresenting) return;
+  camera.position.z = Math.max(0.25, Math.min(1.6, camera.position.z + e.deltaY * 0.0012));
+}, { passive: true });
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+/* ══════════════════════════════════════════════════════════════════════════
+   SESSION
+   ══════════════════════════════════════════════════════════════════════════ */
+const enterBtn = document.getElementById('enter');
+let xrMode = null;
+
+async function detect() {
+  if (!navigator.xr) {
+    enterBtn.textContent = 'WebXR not available';
+    statsEl.textContent = 'This browser has no WebXR. Open this page in the Meta Quest Browser.\n\nThe block below is a live desktop preview — drag to turn it.';
+    return;
+  }
+  if (await navigator.xr.isSessionSupported('immersive-ar')) xrMode = 'immersive-ar';
+  else if (await navigator.xr.isSessionSupported('immersive-vr')) xrMode = 'immersive-vr';
+
+  if (!xrMode) {
+    enterBtn.textContent = 'No immersive session';
+    statsEl.textContent = 'WebXR is present but no immersive mode is offered. Desktop preview only.';
+    return;
+  }
+  enterBtn.disabled = false;
+  enterBtn.textContent = xrMode === 'immersive-ar' ? 'Enter passthrough' : 'Enter VR';
+  statsEl.textContent = `Ready · ${xrMode}\nVolume ${N}³ · voxel ${(VOX*1000).toFixed(1)} mm · ${CHUNKS**3} chunks`;
+}
+
+/** Quest Browser runs WebXR at 72 Hz unless asked. Take the target if offered,
+ *  else the fastest rate below it. Failure just leaves the default. */
+async function requestFrameRate(session) {
+  const rates = session.supportedFrameRates ? Array.from(session.supportedFrameRates) : [];
+  if (!rates.length || !session.updateTargetFrameRate) return;
+  const below = rates.filter(r => r <= TARGET_HZ);
+  const want = rates.includes(TARGET_HZ) ? TARGET_HZ : (below.length ? Math.max(...below) : Math.min(...rates));
+  try { await session.updateTargetFrameRate(want); }
+  catch (e) { console.warn('frame rate:', e.message); }
+  statsEl.textContent = `In session · ${session.frameRate || '?'} Hz (offered ${rates.join('/')})\n` +
+    `filter ${EURO.minCutoff} / ${EURO.beta} / ${EURO.dCutoff}`;
+}
+
+enterBtn.addEventListener('click', async () => {
+  try {
+    const session = await navigator.xr.requestSession(xrMode, {
+      requiredFeatures: ['local-floor'],
+      optionalFeatures: ['hand-tracking', 'bounded-floor', 'layers'],
+    });
+    await renderer.xr.setSession(session);
+    await requestFrameRate(session);
+    enterBtn.textContent = 'In session';
+    enterBtn.disabled = true;
+    session.addEventListener('end', () => {
+      enterBtn.disabled = false;
+      enterBtn.textContent = xrMode === 'immersive-ar' ? 'Enter passthrough' : 'Enter VR';
+    });
+  } catch (e) {
+    statsEl.textContent = 'Could not start session: ' + e.message;
+  }
+});
+
+// Register the service worker so the page is installable as a PWA.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js").catch(e => console.warn("SW:", e.message));
+}
+
+resetToCuboid();
+while (dirty.some(d => d)) remeshBudgeted();   // first mesh is built before the first frame
+renderer.setAnimationLoop(tick);
+detect();
+</script>
+</body>
+</html>
