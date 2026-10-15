@@ -1,11 +1,11 @@
 # Digital Clay — Quest 3 prototype
 
 A hand-tracked SDF sculpting spike. You start with a cuboid of clay floating in
-passthrough, pinch to push material around, and press EXPORT to drop an OBJ onto
-this Mac.
+passthrough, pinch to push material around, and press EXPORT to write an OBJ to
+the machine running the dev server.
 
-**Working on device as of 9 September 2026.** Full write-up in
-[docs/PROGRESS.md](docs/PROGRESS.md).
+**Working on device as of 9 September 2026.** Design notes, findings and next
+steps are in [docs/PROGRESS.md](docs/PROGRESS.md).
 
 This is **Phase 1–2 of the build plan**, taken as far as WebXR allows: it proves
 the interaction and the geometry pipeline without a Unity install. The
@@ -15,8 +15,14 @@ production path is still Unity + compute shaders — see the caveats at the bott
 
 ## Run it
 
+**Prerequisites.** A Meta Quest 3, and a Mac (Apple Silicon) with Node.js. The
+scripts download and expect a macOS toolchain; the toolchain itself is not in git
+(see [docs/PROGRESS.md §7](docs/PROGRESS.md)).
+
 ```bash
-cd /path/to/DigitalClay
+git clone https://github.com/nikkinaq-a11y/digital-clay-shared.git
+cd digital-clay-shared
+npm install
 ./setup.sh     # first time, or after moving the folder
 ./start.sh
 ```
@@ -29,13 +35,13 @@ context, and `adb reverse` makes the Mac's server appear to the headset as
 localhost — which counts as secure. Typing the Mac's LAN IP instead gives you a
 plain-HTTP origin and the Enter button will stay dark.
 
-You can also just open `http://localhost:8080` on the Mac. You get a desktop
+You can also just open `http://localhost:8080` on the Mac running the server. You get a desktop
 preview of the block — drag to turn it — which is the fastest way to check a
 change without putting the headset on.
 
 ### First-time headset setup
 
-Only you can do this part:
+Each person with a headset does this once:
 
 1. **Meta Horizon phone app** → your Quest 3 → *Headset settings* → **Developer Mode → ON**.
    This needs a verified developer *organisation* at `developers.meta.com`, not
@@ -53,10 +59,10 @@ headset, and set *Hand tracking frequency* to **High** if it's offered.
 ## What is where
 
 ```
-DigitalClay/
+digital-clay-shared/
 ├── README.md              you are here — how to run it
-├── docs/PROGRESS.md       full write-up: architecture, findings, next steps
-├── setup.sh               run after moving the folder
+├── docs/PROGRESS.md       architecture, findings, known defect, next steps
+├── setup.sh               run after cloning or moving the folder
 ├── start.sh               bridge the headset + serve + open the page
 ├── build-apk.sh           package as an installable APK
 ├── serve.js               dev server, export endpoint, live reload
@@ -66,12 +72,12 @@ DigitalClay/
 │   ├── sw.js              service worker
 │   └── vendor/            three.js r169
 ├── scripts/               APK preparation
-├── test/                  headless geometry checks — npm test
-├── media/                 headset recordings
-├── exports/               sculptures you export
-├── signing/               APK signing key — BACK THIS UP
-└── tools/                 adb, JDK 17, Android SDK (~750 MB, not in git)
+└── test/                  headless geometry checks — npm test
 ```
+
+Created locally and **not in git**: `node_modules/`, `exports/` (sculptures you
+export), `tools/` (adb, JDK 17, Android SDK — about 750 MB) and `signing/` (the
+APK signing key — ask Nikki if you need to build a signed APK).
 
 ### Moving this folder
 
@@ -96,7 +102,7 @@ The app runs **inside the headset**, in the Quest Browser — the Chromium-based
 browser that ships with Horizon OS, sitting in your app library next to
 everything else. WebXR is a browser standard, so a web page there can ask to go
 immersive and take over the display, with real passthrough and real hand
-tracking. This Mac only serves the file; nothing about the tracking is simulated.
+tracking. The Mac only serves the file; nothing about the tracking is simulated.
 
 `./start.sh` pushes the URL to the headset for you (`adb shell am start`), so you
 should not have to type an address on a virtual keyboard. If that fails, open
@@ -110,7 +116,7 @@ tracking*. Turn on *Auto Switch* too, so putting the controllers down switches t
 hands automatically. No browser flags are needed — WebXR hand tracking is enabled
 by default in the Quest Browser.
 
-**Debugging.** With the headset bridged, open Chrome on this Mac at
+**Debugging.** With the headset bridged, open Chrome on the Mac at
 `chrome://inspect` → *Devices*. The headset tab is listed; click **inspect** for
 full DevTools against the live session — console, breakpoints, network. This is
 the most useful thing to have open while tuning tracking behaviour.
@@ -127,18 +133,19 @@ sculpt, tracking is dropping out and the filter settings need work.
 The browser loop above is for iterating. This turns the same code into an app
 with its own icon that launches straight into passthrough.
 
-**Everything on this Mac is already done.** Installed and verified:
+Everything below is set up on the original development machine; on a fresh clone
+`./setup.sh` tells you what the toolchain is missing.
 
 | | |
 |---|---|
 | JDK 17.0.11 | `tools/jdk/` — Android's build tools are Java |
 | Android SDK | `tools/android-sdk/` — build-tools 34.0.0, platform-tools, android-34 |
-| Bubblewrap CLI | Meta's fork, `@meta-quest/bubblewrap-cli` |
-| Signing key | `signing/android.keystore` — **back this up** |
+| Bubblewrap CLI | Meta's fork, `@meta-quest/bubblewrap-cli` (via `npm install`) |
+| Signing key | `signing/android.keystore` — not in git; held by Nikki |
 | PWA manifest + service worker | `public/manifest.webmanifest`, `public/sw.js` |
 | App icons | `public/icons/` |
 
-`npx bubblewrap doctor` reports the toolchain is valid.
+On the original machine `npx bubblewrap doctor` reports the toolchain is valid.
 
 ### The one thing left: a web address
 
@@ -176,15 +183,15 @@ It is not stuck.
 ### Not yet verified
 
 The Gradle build itself has never been run — it needs a real hosted URL, so it
-stays untested until you have one. Everything upstream of it is confirmed
+stays untested until there is one. Everything upstream of it is confirmed
 working.
 
 ---
 
-## What I can push, and what always needs your hand
+## What can be done remotely, and what always needs a hand
 
-Once Developer Mode is on and the headset is plugged in, most of the loop is
-remote. The exception is worth knowing up front.
+Once Developer Mode is on and the headset is plugged in, most of the loop can be
+driven from the Mac. The exception is worth knowing up front.
 
 | Action | Remote? | How |
 |---|---|---|
@@ -193,7 +200,7 @@ remote. The exception is worth knowing up front.
 | Read console errors and stack traces | **Yes** | `npm run headset:log`, or Chrome `chrome://inspect` |
 | Install an APK | **Yes** | `npm run headset:install` |
 | Launch an installed app | **Yes** | `adb shell am start -n <package>/<activity>` |
-| **Press "Enter passthrough"** | **No** | You. Every time. |
+| **Press "Enter passthrough"** | **No** | The person wearing the headset, every time. |
 
 That last row is not a tooling gap — WebXR deliberately requires a real user
 gesture to start an immersive session, so a page can never grab your display on
@@ -220,7 +227,7 @@ nothing.
 
 ```bash
 npm run headset          # is it connected?
-npm run headset:bridge   # adb reverse, so localhost:8080 reaches this Mac
+npm run headset:bridge   # adb reverse, so localhost:8080 reaches the Mac
 npm run headset:open     # launch the browser straight at the page
 npm run headset:log      # stream browser console output to this terminal
 npm run headset:shot     # grab a screenshot (best effort — may not capture the immersive view)
@@ -240,14 +247,22 @@ npm run headset:install  # install the built APK
 | **Poke** the floating panel | TOOL · MATERIAL · UNDO · EXPORT · RELOAD |
 | **Controllers** | Trigger does the same thing, if hands are being uncooperative |
 
-Tools cycle **Add → Carve → Smooth**. Materials cycle **Wet stoneware → Oil
-plasticine → Warm wax → Plaster**, which changes both the look and the feel —
-`smoothK` is how readily material fuses to itself, `rate` is how much it resists
-a single stroke. Plaster is stiff and barely blends; wet stoneware takes
-everything.
+Tools cycle **Add → Carve → Smooth**. Materials cycle **Soft clay → Stiff clay**,
+which changes both the look and the feel — `smoothK` is how readily material
+fuses to itself, `rate` is how far a single stroke moves the field. Soft is high
+on both and blends readily; stiff is low on both and barely blends. The two are
+deliberately far apart so the difference is unmistakable. (`MATERIALS` in
+`public/index.html`.)
 
-EXPORT posts the mesh to the server, which writes it to `exports/` on this Mac
-with a timestamp and the material name. Watch the terminal — it prints vertex and
+### Tuning from the URL
+
+Feel parameters can be overridden without editing code, e.g.
+`http://localhost:8080/?beta=20&mc=1.2&hz=120`. See the table in
+[docs/PROGRESS.md §4](docs/PROGRESS.md) for `mc`, `beta`, `dc`, `hz`, `probe` and
+`hands`.
+
+EXPORT posts the mesh to the server, which writes it to `exports/` on the
+machine running it, with a timestamp and the material name. Watch the terminal — it prints vertex and
 triangle counts on each save.
 
 ---
@@ -281,7 +296,7 @@ which duplicates about 0.6% of the triangles. Export doesn't use them — it run
 npm test
 ```
 
-All 18 checks pass on this machine:
+All 18 checks pass:
 
 - the starting cuboid extracts to 18,252 triangles, sitting at ±9 cm with
   **0.00 mm** corner error
@@ -290,10 +305,10 @@ All 18 checks pass on this machine:
 - it is manifold for geometric strokes, but **not** for real freehand work —
   see Known limits
 - chunked and welded extraction occupy the same space to within 0.0000 mm
-- one brush stamp: **0.44 ms**; median chunk rebuild **0.28 ms**, worst **2.12 ms**
+- one brush stamp: **~0.43 ms**; median chunk rebuild **~0.1 ms**, worst **~1.4 ms**
 - whole-volume weld for export: **~18 ms**, off the hot path
 
-Those timings are from the Mac. The headset's JS runs several times slower, which
+Those timings are from a Mac. The headset's JS runs several times slower, which
 is exactly why the remesh budget is a time slice rather than a chunk count.
 
 ---
@@ -306,7 +321,7 @@ is exactly why the remesh budget is a time slice rather than a chunk count.
   most DCC import; a problem for 3D printing or booleans. Cause and three
   possible fixes in [docs/PROGRESS.md §6](docs/PROGRESS.md).
 
-- **It's JavaScript on the CPU.** The brief's architecture puts the field and the
+- **It's JavaScript on the CPU.** The intended architecture puts the field and the
   extraction on the GPU. Expect this to feel good but not fast, and expect the
   ceiling to be well below what Unity + compute would give you.
 - **Turntable rotation only.** The left hand translates freely but spins the
