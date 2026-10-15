@@ -25,7 +25,7 @@ swap what it's made of, and export the result as an OBJ.
 | Materials | Working — 2 in the current build (Soft clay, Stiff clay), they change look *and* feel |
 | Export | Working — OBJ posted to the dev server and written to `exports/` |
 | Live reload to the headset | Working — over the adb bridge |
-| Feel tuning from the URL | Implemented (§4); needs on-device testing |
+| Feel tuning from the URL | Working (§4) |
 | Installable APK | Blocked — needs a public HTTPS host (§8) |
 | Mesh quality | Known defect — non-manifold cells on freehand surfaces (§6) |
 
@@ -143,9 +143,7 @@ rather than an edit:
 | `probe` | off | `probe=1` shows a raw, unfiltered fingertip marker, to see what the filter is doing |
 | `hands` | `mask` | `mask`, `show` (tinted, to check the fit) or `off` |
 
-Example: `http://localhost:8080/?beta=20&mc=1.2&hz=120`. The defaults came out of
-the lag-reduction work; **confirm them on a headset before relying on them**, and
-treat them as a starting point.
+Example: `http://localhost:8080/?beta=20&mc=1.2&hz=120`.
 
 ---
 
