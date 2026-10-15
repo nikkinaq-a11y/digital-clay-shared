@@ -44,8 +44,8 @@ change without putting the headset on.
 Each person with a headset does this once:
 
 1. **Meta Horizon phone app** → your Quest 3 → *Headset settings* → **Developer Mode → ON**.
-   This needs a verified developer *organisation* at `developers.meta.com`, not
-   just an account — creating one asks for 2FA or a card on file.
+   You can switch it on entirely from the phone app — **no verified developer
+   organisation is needed**.
 2. **Reboot the headset.**
 3. Plug in with a USB-C cable that carries **data** (many charging cables don't).
 4. Put the headset on and accept **Allow USB debugging** — tick *Always allow*.
